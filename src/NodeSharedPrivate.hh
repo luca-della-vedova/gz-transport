@@ -194,7 +194,21 @@ namespace gz::transport
 
               // Fallback to default configuration.
               _configSource = ZenohConfigSource::kDefault;
-              return zenoh::Config::create_default();
+              auto config = zenoh::Config::create_default();
+              zenoh::ZResult res;
+
+              // Ensure multicast scouting is enabled on loopback.
+              config.insert_json5("scouting/multicast/enabled", "true", &res);
+              config.insert_json5("scouting/multicast/interface", "\"127.0.0.1\"", &res);
+
+              // Use GZ_DISCOVERY_MSG_PORT if set, otherwise default.
+              int discPort = this->NonNegativeEnvVar("GZ_DISCOVERY_MSG_PORT", 7447);
+              config.insert_json5("scouting/multicast/port", std::to_string(discPort), &res);
+
+              // Configure listening endpoints for localhost loopback.
+              config.insert_json5("listen/endpoints", "[\"tcp/127.0.0.1:0\"]", &res);
+
+              return config;
             }
 
     /// \brief Apply key=value config overrides to a Zenoh config.

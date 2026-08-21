@@ -93,37 +93,7 @@ namespace gz::transport
 #ifdef HAVE_ZENOH
       else if (this->gzImplementation == "zenoh")
       {
-        ZenohConfigSource configSource;
-        auto config = ZenohConfig(configSource);
-        if (this->verbose)
-        {
-          if (configSource == ZenohConfigSource::kFromEnvVariable)
-            std::cout << "Zenoh config loaded from ZENOH_CONFIG" << std::endl;
-          else
-            std::cout << "Zenoh default config loaded" << std::endl;
-        }
-
-        // Apply key=value overrides from GZ_TRANSPORT_ZENOH_CONFIG_OVERRIDE.
-        const char *overrideEnv =
-            std::getenv("GZ_TRANSPORT_ZENOH_CONFIG_OVERRIDE");
-        if (overrideEnv)
-          ApplyZenohConfigOverrides(config, overrideEnv, this->verbose);
-
-        try
-        {
-          this->session = std::make_shared<zenoh::Session>(
-            zenoh::Session::open(std::move(config)));
-        }
-        catch (const zenoh::ZException &e)
-        {
-          // Throw rather than continuing with a null session, which
-          // would cause segfaults downstream. This can happen when
-          // using client mode without a reachable router. Users can
-          // configure connect.timeout_ms in the Zenoh config to wait
-          // for the router to become available.
-          throw gz::transport::Exception(
-            std::string("Failed to open Zenoh session: ") + e.what());
-        }
+        // Session initialization is deferred to NodeShared::Session() (lazy init).
       }
 #endif
     }
@@ -163,7 +133,9 @@ namespace gz::transport
     /// Otherwise, use the default Zenoh configuration.
     /// \param[out] _configSource The source of the configuration.
     /// \return The Zenoh configuration object.
-    public: inline zenoh::Config ZenohConfig(ZenohConfigSource &_configSource)
+    public: inline zenoh::Config ZenohConfig(
+              ZenohConfigSource &_configSource,
+              const std::vector<std::string> &_relays = {})
             {
               const char *zenohConfigEnv = std::getenv("ZENOH_CONFIG");
               if (zenohConfigEnv)
@@ -197,16 +169,45 @@ namespace gz::transport
               auto config = zenoh::Config::create_default();
               zenoh::ZResult res;
 
-              // Ensure multicast scouting is enabled on loopback.
+              // Ensure multicast scouting is enabled.
               config.insert_json5("scouting/multicast/enabled", "true", &res);
-              config.insert_json5("scouting/multicast/interface", "\"127.0.0.1\"", &res);
 
               // Use GZ_DISCOVERY_MSG_PORT if set, otherwise default.
               int discPort = this->NonNegativeEnvVar("GZ_DISCOVERY_MSG_PORT", 7447);
               config.insert_json5("scouting/multicast/port", std::to_string(discPort), &res);
 
-              // Configure listening endpoints for localhost loopback.
-              config.insert_json5("listen/endpoints", "[\"tcp/127.0.0.1:0\"]", &res);
+              // Configure listening endpoints (listen on default port 7447, fallback to ephemeral if bound).
+              config.insert_json5("listen/endpoints", "[\"tcp/0.0.0.0:7447\", \"tcp/0.0.0.0:0\"]", &res);
+
+              // Collect relays from GZ_RELAY and programmatic _relays.
+              std::vector<std::string> allRelays = _relays;
+              const char *gzRelayEnv = std::getenv("GZ_RELAY");
+              if (gzRelayEnv && std::strlen(gzRelayEnv) > 0)
+              {
+                allRelays.push_back(gzRelayEnv);
+              }
+
+              if (!allRelays.empty())
+              {
+                std::string endpointsJson = "[";
+                for (size_t i = 0; i < allRelays.size(); ++i)
+                {
+                  std::string endpoint = allRelays[i];
+                  if (endpoint.find('/') == std::string::npos &&
+                      endpoint.find(':') == std::string::npos)
+                  {
+                    endpoint = "tcp/" + endpoint + ":7447";
+                  }
+                  else if (endpoint.find('/') == std::string::npos)
+                  {
+                    endpoint = "tcp/" + endpoint;
+                  }
+                  if (i > 0) endpointsJson += ", ";
+                  endpointsJson += "\"" + endpoint + "\"";
+                }
+                endpointsJson += "]";
+                config.insert_json5("connect/endpoints", endpointsJson, &res);
+              }
 
               return config;
             }

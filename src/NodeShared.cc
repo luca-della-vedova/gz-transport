@@ -293,18 +293,7 @@ NodeShared::NodeShared()
     this->dataPtr->msgDiscovery->Start();
     this->dataPtr->srvDiscovery->Start();
   }
-#ifdef HAVE_ZENOH
-  else if (impl == "zenoh")
-  {
-    this->dataPtr->msgDiscovery->Start(this->Session(),
-      std::bind(&MsgDiscovery::LivelinessMsgDataHandler,
-            this->dataPtr->msgDiscovery.get(), std::placeholders::_1));
 
-    this->dataPtr->srvDiscovery->Start(this->Session(),
-      std::bind(&SrvDiscovery::LivelinessSrvDataHandler,
-            this->dataPtr->srvDiscovery.get(), std::placeholders::_1));
-  }
-#endif
 
   // Create the local publish thread.
   this->dataPtr->pubThread = std::thread(&NodeSharedPrivate::PublishThread,
@@ -1852,6 +1841,13 @@ void NodeShared::AddGlobalRelay(const std::string& _relayAddress)
 {
   dataPtr->msgDiscovery->AddRelayAddress(_relayAddress);
   dataPtr->srvDiscovery->AddRelayAddress(_relayAddress);
+#ifdef HAVE_ZENOH
+  if (this->GzImplementation() == "zenoh" && this->dataPtr->session != nullptr)
+  {
+    std::cerr << "Warning: NodeShared::AddGlobalRelay() called after Zenoh session has already been initialized. Relay ["
+              << _relayAddress << "] will not be added dynamically to the existing Zenoh session." << std::endl;
+  }
+#endif
 }
 
 /////////////////////////////////////////////////
@@ -1880,6 +1876,52 @@ std::string NodeShared::GzImplementation() const
 /////////////////////////////////////////////////
 std::shared_ptr<zenoh::Session> NodeShared::Session()
 {
+  std::lock_guard<std::recursive_mutex> lock(this->mutex);
+  if (!this->dataPtr->session)
+  {
+    NodeSharedPrivate::ZenohConfigSource configSource;
+    auto config = this->dataPtr->ZenohConfig(configSource, this->GlobalRelays());
+    if (this->dataPtr->verbose)
+    {
+      if (configSource == NodeSharedPrivate::ZenohConfigSource::kFromEnvVariable)
+        std::cout << "Zenoh config loaded from ZENOH_CONFIG" << std::endl;
+      else
+        std::cout << "Zenoh default config loaded" << std::endl;
+    }
+
+    // Apply key=value overrides from GZ_TRANSPORT_ZENOH_CONFIG_OVERRIDE.
+    const char *overrideEnv =
+        std::getenv("GZ_TRANSPORT_ZENOH_CONFIG_OVERRIDE");
+    if (overrideEnv)
+    {
+      NodeSharedPrivate::ApplyZenohConfigOverrides(
+        config, overrideEnv, this->dataPtr->verbose);
+    }
+
+    try
+    {
+      this->dataPtr->session = std::make_shared<zenoh::Session>(
+        zenoh::Session::open(std::move(config)));
+    }
+    catch (const zenoh::ZException &e)
+    {
+      // Throw rather than continuing with a null session, which
+      // would cause segfaults downstream. This can happen when
+      // using client mode without a reachable router. Users can
+      // configure connect.timeout_ms in the Zenoh config to wait
+      // for the router to become available.
+      throw gz::transport::Exception(
+        std::string("Failed to open Zenoh session: ") + e.what());
+    }
+
+    this->dataPtr->msgDiscovery->Start(this->dataPtr->session,
+      std::bind(&MsgDiscovery::LivelinessMsgDataHandler,
+            this->dataPtr->msgDiscovery.get(), std::placeholders::_1));
+
+    this->dataPtr->srvDiscovery->Start(this->dataPtr->session,
+      std::bind(&SrvDiscovery::LivelinessSrvDataHandler,
+            this->dataPtr->srvDiscovery.get(), std::placeholders::_1));
+  }
   return this->dataPtr->session;
 }
 #endif

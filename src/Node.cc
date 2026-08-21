@@ -1198,7 +1198,7 @@ Node::Publisher Node::Advertise(const std::string &_topic,
 #ifdef HAVE_ZENOH
   else if (impl == "zenoh")
   {
-    auto zPub = this->Shared()->dataPtr->session->declare_publisher(
+    auto zPub = this->Shared()->Session()->declare_publisher(
      zenoh::KeyExpr(fullyQualifiedTopic));
 
     std::string token = TopicUtils::CreateLivelinessToken(
@@ -1209,7 +1209,7 @@ Node::Publisher Node::Advertise(const std::string &_topic,
       return Publisher();
 
     auto zToken =
-      this->Shared()->dataPtr->session->liveliness_declare_token(token);
+      this->Shared()->Session()->liveliness_declare_token(token);
 
     return Publisher(publisher, std::move(zPub), std::move(zToken));
   }

@@ -171,13 +171,41 @@ namespace gz::transport
 
               // Ensure multicast scouting is enabled.
               config.insert_json5("scouting/multicast/enabled", "true", &res);
+              const char *gzIpEnv = std::getenv("GZ_IP");
+              if (gzIpEnv && std::strlen(gzIpEnv) > 0)
+              {
+                config.insert_json5("scouting/multicast/interface",
+                                    std::string("\"") + gzIpEnv + "\"", &res);
+              }
+              else
+              {
+                config.insert_json5("scouting/multicast/interface", "\"127.0.0.1\"", &res);
+              }
 
               // Use GZ_DISCOVERY_MSG_PORT if set, otherwise default.
               int discPort = this->NonNegativeEnvVar("GZ_DISCOVERY_MSG_PORT", 7447);
               config.insert_json5("scouting/multicast/port", std::to_string(discPort), &res);
 
-              // Configure listening endpoints (listen on default port 7447, fallback to ephemeral if bound).
-              config.insert_json5("listen/endpoints", "[\"tcp/0.0.0.0:7447\", \"tcp/0.0.0.0:0\"]", &res);
+              // Determine listening endpoint.
+              // If GZ_ZENOH_LISTEN_PORT is explicitly set, listen on 0.0.0.0:<port>.
+              // If GZ_IP is set (e.g. server/cloud deployment), listen on 0.0.0.0:7447 (or GZ_DISCOVERY_MSG_PORT).
+              // Otherwise for local/test nodes, listen on 127.0.0.1:0 (ephemeral port on loopback)
+              // to prevent port collisions and ensure advertised locators are reachable on loopback.
+              std::string listenEndpoint = "tcp/127.0.0.1:0";
+              const char *listenPortEnv = std::getenv("GZ_ZENOH_LISTEN_PORT");
+              if (listenPortEnv && std::strlen(listenPortEnv) > 0)
+              {
+                int listenPort = this->NonNegativeEnvVar("GZ_ZENOH_LISTEN_PORT", 0);
+                listenEndpoint = "tcp/0.0.0.0:" + std::to_string(listenPort);
+              }
+              else if (gzIpEnv && std::strlen(gzIpEnv) > 0)
+              {
+                int listenPort = this->NonNegativeEnvVar("GZ_DISCOVERY_MSG_PORT", 7447);
+                listenEndpoint = "tcp/0.0.0.0:" + std::to_string(listenPort);
+              }
+
+              config.insert_json5("listen/endpoints",
+                "[\"" + listenEndpoint + "\"]", &res);
 
               // Collect relays from GZ_RELAY and programmatic _relays.
               std::vector<std::string> allRelays = _relays;

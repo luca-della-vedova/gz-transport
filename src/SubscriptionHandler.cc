@@ -78,6 +78,13 @@ namespace gz::transport
 
     /// \brief The liveliness token.
     public: std::unique_ptr<zenoh::LivelinessToken> zToken;
+
+    /// \brief Mutex to synchronize subscriber destruction and callback execution.
+    public: std::shared_ptr<std::mutex> cbMutex = std::make_shared<std::mutex>();
+
+    /// \brief Flag to signal that the handler is still active.
+    public: std::shared_ptr<std::atomic<bool>> alive =
+      std::make_shared<std::atomic<bool>>(true);
 #endif
   };
 
@@ -93,6 +100,19 @@ namespace gz::transport
   /////////////////////////////////////////////////
   SubscriptionHandlerBase::~SubscriptionHandlerBase()
   {
+#ifdef HAVE_ZENOH
+    if (this->dataPtr)
+    {
+      if (this->dataPtr->alive)
+        *this->dataPtr->alive = false;
+      if (this->dataPtr->cbMutex)
+      {
+        std::lock_guard<std::mutex> lock(*this->dataPtr->cbMutex);
+        this->dataPtr->zSub.reset();
+        this->dataPtr->zToken.reset();
+      }
+    }
+#endif
   }
 
   /////////////////////////////////////////////////
@@ -160,8 +180,14 @@ namespace gz::transport
     MessageInfo msgInfo;
     msgInfo.SetTopic(_fullyQualifiedTopic.Topic());
     msgInfo.SetType(this->TypeName());
-    auto dataHandler = [this, msgInfo](const zenoh::Sample &_sample)
+    auto alive = this->dataPtr->alive;
+    auto cbMutex = this->dataPtr->cbMutex;
+    auto dataHandler = [this, msgInfo, alive, cbMutex](const zenoh::Sample &_sample)
     {
+      std::lock_guard<std::mutex> lock(*cbMutex);
+      if (!*alive)
+        return;
+
       auto attachment = _sample.get_attachment();
       if (attachment.has_value())
       {
@@ -253,9 +279,15 @@ namespace gz::transport
     }
     zenoh::KeyExpr keyexpr(*_fullyQualifiedTopic.FullTopic());
 
+    auto alive = this->dataPtr->alive;
+    auto cbMutex = this->dataPtr->cbMutex;
     auto dataHandler =
-        [this, _fullyQualifiedTopic](const zenoh::Sample &_sample)
+        [this, _fullyQualifiedTopic, alive, cbMutex](const zenoh::Sample &_sample)
     {
+      std::lock_guard<std::mutex> lock(*cbMutex);
+      if (!*alive)
+        return;
+
       MessageInfo msgInfo;
       msgInfo.SetTopic(_fullyQualifiedTopic.Topic());
       auto attachment = _sample.get_attachment();

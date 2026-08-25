@@ -93,7 +93,37 @@ namespace gz::transport
 #ifdef HAVE_ZENOH
       else if (this->gzImplementation == "zenoh")
       {
-        // Session initialization is deferred to NodeShared::Session() (lazy init).
+        ZenohConfigSource configSource;
+        auto config = ZenohConfig(configSource);
+        if (this->verbose)
+        {
+          if (configSource == ZenohConfigSource::kFromEnvVariable)
+            std::cout << "Zenoh config loaded from ZENOH_CONFIG" << std::endl;
+          else
+            std::cout << "Zenoh default config loaded" << std::endl;
+        }
+
+        // Apply key=value overrides from GZ_TRANSPORT_ZENOH_CONFIG_OVERRIDE.
+        const char *overrideEnv =
+            std::getenv("GZ_TRANSPORT_ZENOH_CONFIG_OVERRIDE");
+        if (overrideEnv)
+          ApplyZenohConfigOverrides(config, overrideEnv, this->verbose);
+
+        try
+        {
+          this->session = std::make_shared<zenoh::Session>(
+            zenoh::Session::open(std::move(config)));
+        }
+        catch (const zenoh::ZException &e)
+        {
+          // Throw rather than continuing with a null session, which
+          // would cause segfaults downstream. This can happen when
+          // using client mode without a reachable router. Users can
+          // configure connect.timeout_ms in the Zenoh config to wait
+          // for the router to become available.
+          throw gz::transport::Exception(
+            std::string("Failed to open Zenoh session: ") + e.what());
+        }
       }
 #endif
     }
@@ -133,9 +163,7 @@ namespace gz::transport
     /// Otherwise, use the default Zenoh configuration.
     /// \param[out] _configSource The source of the configuration.
     /// \return The Zenoh configuration object.
-    public: inline zenoh::Config ZenohConfig(
-              ZenohConfigSource &_configSource,
-              const std::vector<std::string> &_relays = {})
+    public: inline zenoh::Config ZenohConfig(ZenohConfigSource &_configSource)
             {
               const char *zenohConfigEnv = std::getenv("ZENOH_CONFIG");
               if (zenohConfigEnv)
@@ -206,36 +234,6 @@ namespace gz::transport
 
               config.insert_json5("listen/endpoints",
                 "[\"" + listenEndpoint + "\"]", &res);
-
-              // Collect relays from GZ_RELAY and programmatic _relays.
-              std::vector<std::string> allRelays = _relays;
-              const char *gzRelayEnv = std::getenv("GZ_RELAY");
-              if (gzRelayEnv && std::strlen(gzRelayEnv) > 0)
-              {
-                allRelays.push_back(gzRelayEnv);
-              }
-
-              if (!allRelays.empty())
-              {
-                std::string endpointsJson = "[";
-                for (size_t i = 0; i < allRelays.size(); ++i)
-                {
-                  std::string endpoint = allRelays[i];
-                  if (endpoint.find('/') == std::string::npos &&
-                      endpoint.find(':') == std::string::npos)
-                  {
-                    endpoint = "tcp/" + endpoint + ":7447";
-                  }
-                  else if (endpoint.find('/') == std::string::npos)
-                  {
-                    endpoint = "tcp/" + endpoint;
-                  }
-                  if (i > 0) endpointsJson += ", ";
-                  endpointsJson += "\"" + endpoint + "\"";
-                }
-                endpointsJson += "]";
-                config.insert_json5("connect/endpoints", endpointsJson, &res);
-              }
 
               return config;
             }

@@ -21,6 +21,8 @@
 
 #ifdef HAVE_ZENOH
 #include <zenoh.hxx>
+#include <atomic>
+#include <mutex>
 #endif
 
 namespace gz::transport

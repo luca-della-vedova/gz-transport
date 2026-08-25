@@ -293,7 +293,7 @@ namespace gz
       //////////////////////////////////////////////////
       public: void LivelinessMsgDataHandler(const zenoh::Sample &_sample)
       {
-        DiscoveryCallback<Pub> cb = nullptr;
+        DiscoveryCallback<Pub> cb;
         std::string token{_sample.get_keyexpr().as_string_view()};
         std::string prefix;
         std::string partition;
@@ -314,8 +314,8 @@ namespace gz
 
         // Copy callbacks while holding the lock, then call them outside
         // to avoid potential deadlocks with NodeShared::mutex.
-        DiscoveryCallback<Pub> regCb = nullptr;
-        DiscoveryCallback<Pub> unregCb = nullptr;
+        DiscoveryCallback<Pub> regCb;
+        DiscoveryCallback<Pub> unregCb;
 
         {
           std::lock_guard<std::mutex> lock(this->mutex);

@@ -57,8 +57,10 @@ namespace gz::transport
     public: std::string hUuid;
 
 #ifdef HAVE_ZENOH
-    /// \brief Zenoh queriable to receive requests.
-    std::unique_ptr<zenoh::Queryable<void>> zQueryable;
+    /// \brief Zenoh queryable to receive requests. Persistent for
+    /// the IRepHandler's lifetime so its interest declaration on
+    /// the service keyexpr remains in effect.
+    public: std::unique_ptr<zenoh::Queryable<void>> zQueryable;
 
     /// \brief The liveliness token.
     public: std::unique_ptr<zenoh::LivelinessToken> zToken;
@@ -89,14 +91,18 @@ namespace gz::transport
     std::shared_ptr<zenoh::Session> _session,
     const std::string &_service)
   {
-    auto onQuery = [this, _service](const zenoh::Query &_query)
+    std::weak_ptr<IRepHandler> weakSelf = this->weak_from_this();
+    auto onQuery =
+      [weakSelf, _service](const zenoh::Query &_query)
     {
-      std::string output;
+      auto self = weakSelf.lock();
+      if (!self)
+        return;
       std::string input = "";
       if (_query.get_payload())
         input = _query.get_payload()->get().as_string();
-
-      if (this->RunCallback(input, output))
+      std::string output;
+      if (self->RunCallback(input, output))
         _query.reply(_service, output);
     };
 
@@ -105,7 +111,7 @@ namespace gz::transport
     zenoh::Session::QueryableOptions opts;
     this->dataPtr->zQueryable = std::make_unique<zenoh::Queryable<void>>(
       _session->declare_queryable(
-        _service, onQuery, onDropQueryable, std::move(opts)));
+        _service, std::move(onQuery), onDropQueryable, std::move(opts)));
 
     std::string token = TopicUtils::CreateLivelinessToken(
       _service, this->dataPtr->pUuid, this->dataPtr->nUuid, "SS",

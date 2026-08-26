@@ -15,14 +15,15 @@
  *
 */
 
+#include <memory>
+#include <string>
+
 #include "gz/transport/config.hh"
 #include "gz/transport/SubscriptionHandler.hh"
 #include "gz/transport/TopicUtils.hh"
 
 #ifdef HAVE_ZENOH
 #include <zenoh.hxx>
-#include <atomic>
-#include <mutex>
 #endif
 
 namespace gz::transport
@@ -80,13 +81,6 @@ namespace gz::transport
 
     /// \brief The liveliness token.
     public: std::unique_ptr<zenoh::LivelinessToken> zToken;
-
-    /// \brief Mutex to synchronize subscriber destruction and callback execution.
-    public: std::shared_ptr<std::mutex> cbMutex = std::make_shared<std::mutex>();
-
-    /// \brief Flag to signal that the handler is still active.
-    public: std::shared_ptr<std::atomic<bool>> alive =
-      std::make_shared<std::atomic<bool>>(true);
 #endif
   };
 
@@ -102,19 +96,6 @@ namespace gz::transport
   /////////////////////////////////////////////////
   SubscriptionHandlerBase::~SubscriptionHandlerBase()
   {
-#ifdef HAVE_ZENOH
-    if (this->dataPtr)
-    {
-      if (this->dataPtr->alive)
-        *this->dataPtr->alive = false;
-      if (this->dataPtr->cbMutex)
-      {
-        std::lock_guard<std::mutex> lock(*this->dataPtr->cbMutex);
-        this->dataPtr->zSub.reset();
-        this->dataPtr->zToken.reset();
-      }
-    }
-#endif
   }
 
   /////////////////////////////////////////////////
@@ -179,43 +160,44 @@ namespace gz::transport
     std::shared_ptr<zenoh::Session> _session,
     const FullyQualifiedTopic &_fullyQualifiedTopic)
   {
-    MessageInfo msgInfo;
-    msgInfo.SetTopic(_fullyQualifiedTopic.Topic());
-    msgInfo.SetType(this->TypeName());
-    auto alive = this->dataPtr->alive;
-    auto cbMutex = this->dataPtr->cbMutex;
-    auto dataHandler = [this, msgInfo, alive, cbMutex](const zenoh::Sample &_sample)
+    std::weak_ptr<ISubscriptionHandler> weakSelf = this->weak_from_this();
+    const std::string expectedType = this->TypeName();
+    const std::string topic = _fullyQualifiedTopic.Topic();
+
+    auto onSample =
+      [weakSelf, expectedType, topic](const zenoh::Sample &_sample)
     {
-      std::lock_guard<std::mutex> lock(*cbMutex);
-      if (!*alive)
+      auto self = weakSelf.lock();
+      if (!self)
         return;
 
       auto attachment = _sample.get_attachment();
-      if (attachment.has_value())
+      if (!attachment.has_value())
+      {
+        std::cerr << "SubscriptionHandler: Unable to find attachment. "
+                  << "Ignoring message..." << std::endl;
+        return;
+      }
+      auto msgType = attachment->get().as_string();
+      if (expectedType != kGenericMessageType && expectedType != msgType)
       {
         // Same topic but different type, not interested.
-        auto msgType = attachment->get().as_string();
-        if (this->TypeName() != kGenericMessageType &&
-            this->TypeName() != msgType)
-        {
-          return;
-        }
-
-        auto output = this->CreateMsg(
-          _sample.get_payload().as_string(), msgType);
-        if (output)
-          this->RunLocalCallback(*output, msgInfo);
+        return;
       }
-      else
-      {
-        std::cerr << "SubscriptionHandler::SetCallback(): Unable to find "
-                  << "attachment. Ignoring message..." << std::endl;
-      }
+      auto msg = self->CreateMsg(_sample.get_payload().as_string(), msgType);
+      if (!msg)
+        return;
+      MessageInfo info;
+      info.SetTopic(topic);
+      info.SetType(msgType);
+      info.SetIntraProcess(false);
+      self->RunLocalCallback(*msg, info);
     };
 
     this->dataPtr->zSub = std::make_unique<zenoh::Subscriber<void>>(
       _session->declare_subscriber(
-        *_fullyQualifiedTopic.FullTopic(), dataHandler, zenoh::closures::none));
+        *_fullyQualifiedTopic.FullTopic(), std::move(onSample),
+        zenoh::closures::none));
 
     std::string token = TopicUtils::CreateLivelinessToken(
       *_fullyQualifiedTopic.FullTopic(), this->ProcUuid(), this->NodeUuid(),
@@ -281,43 +263,45 @@ namespace gz::transport
     }
     zenoh::KeyExpr keyexpr(*_fullyQualifiedTopic.FullTopic());
 
-    auto alive = this->dataPtr->alive;
-    auto cbMutex = this->dataPtr->cbMutex;
-    auto dataHandler =
-        [this, _fullyQualifiedTopic, alive, cbMutex](const zenoh::Sample &_sample)
+    this->SetCallback(_cb);
+
+    const std::string topicShort = _fullyQualifiedTopic.Topic();
+    std::weak_ptr<RawSubscriptionHandler> weakSelf = this->weak_from_this();
+
+    auto onSample = [weakSelf, topicShort](const zenoh::Sample &_sample)
     {
-      std::lock_guard<std::mutex> lock(*cbMutex);
-      if (!*alive)
+      auto self = weakSelf.lock();
+      if (!self)
+        return;
+
+      auto attachment = _sample.get_attachment();
+      if (!attachment.has_value())
+      {
+        std::cerr << "RawSubscriptionHandler: Unable to find attachment. "
+                  << "Ignoring message..." << std::endl;
+        return;
+      }
+      auto msgType = attachment->get().as_string();
+
+      if (self->TypeName() != kGenericMessageType &&
+          self->TypeName() != msgType)
+      {
+        return;
+      }
+      if (!self->UpdateThrottling())
         return;
 
       MessageInfo msgInfo;
-      msgInfo.SetTopic(_fullyQualifiedTopic.Topic());
-      auto attachment = _sample.get_attachment();
-      if (attachment.has_value())
-      {
-        // Same topic but different type, not interested.
-        auto msgType = attachment->get().as_string();
-        if (this->TypeName() != kGenericMessageType &&
-            this->TypeName() != msgType)
-        {
-          return;
-        }
+      msgInfo.SetTopic(topicShort);
+      msgInfo.SetType(msgType);
 
-        msgInfo.SetType(msgType);
-        auto payload = _sample.get_payload().as_string();
-
-        this->RunRawCallback(payload.c_str(), payload.size(), msgInfo);
-      }
-      else
-      {
-        std::cerr << "RawSubscriptionHandler::SetCallback(): Unable to find "
-                  << "attachment. Ignoring message..." << std::endl;
-      }
+      auto payload = _sample.get_payload().as_string();
+      self->RunRawCallback(payload.data(), payload.size(), msgInfo);
     };
 
     this->dataPtr->zSub = std::make_unique<zenoh::Subscriber<void>>(
       _session->declare_subscriber(
-        keyexpr, dataHandler, zenoh::closures::none));
+        keyexpr, std::move(onSample), zenoh::closures::none));
 
     std::string token = TopicUtils::CreateLivelinessToken(
         *_fullyQualifiedTopic.FullTopic(), this->ProcUuid(), this->NodeUuid(),
@@ -328,8 +312,6 @@ namespace gz::transport
 
     this->dataPtr->zToken = std::make_unique<zenoh::LivelinessToken>(
         _session->liveliness_declare_token(token));
-
-    this->SetCallback(std::move(_cb));
   }
 #endif
 

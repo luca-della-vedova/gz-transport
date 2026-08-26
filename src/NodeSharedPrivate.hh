@@ -196,30 +196,12 @@ namespace gz::transport
               _configSource = ZenohConfigSource::kDefault;
               auto config = zenoh::Config::create_default();
               zenoh::ZResult res;
-
-              // Ensure multicast scouting is enabled.
+              // Ensure multicast scouting is enabled on loopback.
               config.insert_json5("scouting/multicast/enabled", "true", &res);
-              const char *gzIpEnv = std::getenv("GZ_IP");
-              if (gzIpEnv && std::strlen(gzIpEnv) > 0)
-              {
-                config.insert_json5("scouting/multicast/interface",
-                                    std::string("\"") + gzIpEnv + "\"", &res);
-              }
-              else
-              {
-                config.insert_json5("scouting/multicast/interface", "\"127.0.0.1\"", &res);
-              }
+              config.insert_json5("scouting/multicast/interface", "\"127.0.0.1\"", &res);
 
-              // Determine listening endpoint.
-              // If GZ_IP is set (e.g. server/cloud deployment), listen on 0.0.0.0:7447.
-              // Otherwise for local/test nodes, listen on 127.0.0.1:0 (ephemeral port on loopback)
-              // to prevent port collisions and ensure advertised locators are reachable on loopback.
-              std::string listenEndpoint = (gzIpEnv && std::strlen(gzIpEnv) > 0)
-                  ? "tcp/0.0.0.0:7447"
-                  : "tcp/127.0.0.1:0";
-
-              config.insert_json5("listen/endpoints",
-                "[\"" + listenEndpoint + "\"]", &res);
+              // Listen on an ephemeral port on loopback to prevent port collisions.
+              config.insert_json5("listen/endpoints", "[\"tcp/127.0.0.1:0\"]", &res);
 
               return config;
             }

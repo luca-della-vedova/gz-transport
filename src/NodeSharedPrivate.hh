@@ -194,16 +194,7 @@ namespace gz::transport
 
               // Fallback to default configuration.
               _configSource = ZenohConfigSource::kDefault;
-              auto config = zenoh::Config::create_default();
-              zenoh::ZResult res;
-              // Ensure multicast scouting is enabled on loopback.
-              config.insert_json5("scouting/multicast/enabled", "true", &res);
-              config.insert_json5("scouting/multicast/interface", "\"127.0.0.1\"", &res);
-
-              // Listen on an ephemeral port on loopback to prevent port collisions.
-              config.insert_json5("listen/endpoints", "[\"tcp/127.0.0.1:0\"]", &res);
-
-              return config;
+              return zenoh::Config::create_default();
             }
 
     /// \brief Apply key=value config overrides to a Zenoh config.

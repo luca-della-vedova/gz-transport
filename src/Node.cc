@@ -175,7 +175,12 @@ class Node::PublisherPrivate
   public: MessagePublisher publisher;
 
 #ifdef HAVE_ZENOH
-  /// \brief The zenoh publisher.
+  /// \brief The zenoh publisher. Destroyed (undeclared) with this
+  /// object: publishers run no user callbacks, so the undeclare has
+  /// nothing to wait on, and NodeShared::Shutdown() closes the
+  /// session deterministically so at-exit drops take the fast path.
+  /// The undeclare also emits the liveliness DELETE that lets remote
+  /// sessions forget this publisher immediately.
   public: std::unique_ptr<zenoh::Publisher> zPub;
 
   /// \brief The liveliness token.

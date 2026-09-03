@@ -16,7 +16,7 @@ bazel_dep(name = "rules_cc", version = "0.1.2")
 
 # Minimum version (bzlmod may resolve higher). Keep in sync with
 # GZ_TRANSPORT_ZENOH_MIN_VERSION in CMakeLists.txt (see #868).
-bazel_dep(name = "zenoh-cpp", version = "1.7.2.bcr.1")
+bazel_dep(name = "zenoh-cpp", version = "1.8.0")
 
 # Gazebo Dependencies
 bazel_dep(name = "rules_gazebo", version = "0.0.6")
@@ -24,6 +24,18 @@ bazel_dep(name = "gz-common", version = "7.0.0")
 bazel_dep(name = "gz-math", version = "9.0.0")
 bazel_dep(name = "gz-msgs", version = "12.0.1")
 bazel_dep(name = "gz-utils", version = "4.0.0")
+
+# Rust toolchain
+bazel_dep(name = "rules_rs", version = "0.0.93")
+
+rules_rs_toolchains = use_extension("@rules_rs//rs/toolchains:module_extension.bzl", "toolchains")
+rules_rs_toolchains.toolchain(
+    edition = "2021",
+    version = "1.93.0",
+)
+use_repo(rules_rs_toolchains, "default_rust_toolchains")
+
+register_toolchains("@default_rust_toolchains//...")
 
 archive_override(
     module_name = "gz-common",
